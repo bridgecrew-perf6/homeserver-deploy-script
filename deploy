@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# ArchLinux deploy script w/ docker, closed ports 80 and 443, sshd and iptables, with a static ip and with dockSTARTer
+# partition the disks to LVM with fdisk, then pacstrap the new system, then generate the fstab and the network config.
+enter_to_continue()
+{
+    echo -e "${MAGENTA}Press Enter to continue${RESET}"
+    read && clear
+}
+echo -e "${GREEN}Creating pvs,vgs,lvs...${RESET}\n"
+pvcreate --dataalignment 1m #</dev/sda> #this is your LVM partition that has been created by yourself
+vgcreate volg0 #</dev/sda2> #this too
+lvcreate -L <30GB> volg0 -n lv_root #this is the size of the root volume. you can change the name of the volume group too(volg0) and name of the root volume(lv_root)
+lvcreate -L <size of home> volg0 -n lv_home #change size of the home volume. also if you changed volume group in the last line,do it in here too
+#NOTE: if you want the whole free space for home volume (not using snapshots) change L to l
+#and <size of home> to 100%FREE
+modprobe dm_mod
+vgscan
+vgchange -ay
+enter_to_continue
+#EDIT THIS!!!
+#Formating
+echo -e "${GREEN}Formating The EFI Partition and lvs...${RESET}\n"
+mkfs.ext2 -F32 #</dev/sda1> #EFI partition name
+mkfs.ext4 /dev/volg0/lv_root #if you changed volg0 and lv_root, change them in here too
+mkfs.ext4 /dev/volg0/lv_home #and in here
+enter_to_continue
+#EDIT THIS <>
+#Mounting
+echo -e "${GREEN}Mounting...${RESET}\n"
+mount /dev/volg0/lv_root /mnt #here too
+mkdir /mnt/home
+mount /dev/volg0/lv_home /mnt/home #also here
+mkdir -p /mnt/boot
+mount #</dev/sda1> /mnt/boot 
+enter_to_continue
+pacstrap /mnt base base-devel linux linux-firmware nano dhcpcd netctl openssh iw wpa_supplicant dialog
+genfstab -U /mnt >> /mnt/etc/fstab
+echo "sk_SK.UTF-8 UTF-8" >> /mnt/etc/locale.conf
+echo "KEYMAP=sk-qwerty" >> /mnt/etc/vconsole.conf
+ln -sf /usr/share/zoneinfo/Europe/Bratislava /mnt/etc/localtime
+arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+arch-chroot /mnt grub-install --target=i386-pc --recheck --debug /dev/volg0/lv_root
+arch-chroot /mnt systemctl enable dhcpcd
+arch-chroot /mnt systemctl enable sshd
+arch-chroot /mnt systemctl enable netctl-auto@wlp2s0
+arch-chroot /mnt systemctl enable wpa_supplicant
+arch-chroot /mnt systemctl enable iwd
+arch-chroot /mnt pacman -S --noconfirm docker
+arch-chroot /mnt pacman -S --noconfirm sudo
+arch-chroot /mnt useradd -m -G wheel,docker -s /bin/bash matus
+arch-chroot /mnt passwd matus
+# close ports 80 and 443 with iptables
+arch-chroot /mnt systemctl enable iptables
+arch-chroot /mnt systemctl enable ip6tables
+arch-chroot /mnt systemctl enable iptables-persistent
+arch-chroot /mnt systemctl enable ip6tables-persistent
+arch-chroot /mnt ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
+arch-chroot /mnt ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+# deploy Nextcloud, Jellyfin and install cockpit.
+arch-chroot /mnt pacman -S --noconfirm cockpit
+arch-chroot /mnt systemctl enable cockpit.socket
+arch-chroot /mnt systemctl enable cockpit.service
+arch-chroot /mnt systemctl enable docker
+arch-chroot /mnt docker run -d --restart=always --name nextcloud -p 100:100 -p 200:200 -e "NC_REDIRECT_TO_HTTPS=true"
+arch-chroot /mnt docker run -d --restart=always --name jellyfin -p 8080:8080 -e "JELLYFIN_HTTP_PORT=8080"
+# enable sudo for all users
+arch-chroot /mnt sed -i 's/# %wheel ALL=(ALL) NOPASSWD: ALL/%wheel ALL=(ALL) NOPASSWD: ALL/g' /etc/sudoers
+# disable root login from /etc/passwd
+arch-chroot /mnt sed -i 's/^root:[^:]*:/root:*/g' /etc/shadow
+# disable root login from /etc/shadow
+arch-chroot /mnt sed -i 's/^root:[^:]*:/root:*/g' /etc/shadow
+# disable root login from /etc/group
+arch-chroot /mnt sed -i 's/^root:[^:]*:/root:*/g' /etc/group
+arch-chroot /mnt sudo pacman -Sy curl docker git
+arch-chroot /mnt bash -c "$(curl -fsSL https://get.dockstarter.com)"
+reboot
